@@ -1956,8 +1956,10 @@ def array_str(a, max_line_width=None, precision=None, suppress_small=None):
     '[0 1 2]'
 
     """
-    return array2string(a, max_line_width, precision, suppress_small, ' ', "", str)
-
+    lst = array2string(a, max_line_width, precision, suppress_small, ' ', "", str)
+    if a.shape == ():   # distinguish printed scalar from built-in type when singleton
+        lst = "(" + lst.strip() + ")"
+    return lst
 
 def set_string_function(f, repr=True):
     """

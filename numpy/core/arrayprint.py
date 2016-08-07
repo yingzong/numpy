@@ -232,7 +232,10 @@ def _boolFormatter(x):
 
 
 def repr_format(x):
-    return repr(x)
+    try:
+        return repr(x.item())
+    except:
+        return repr(x)
 
 def _array2string(a, max_line_width, precision, suppress_small, separator=' ',
                   prefix="", formatter=None):
@@ -240,6 +243,26 @@ def _array2string(a, max_line_width, precision, suppress_small, separator=' ',
     if max_line_width is None:
         max_line_width = _line_width
 
+    if a.size > _summaryThreshold:
+        summary_insert = "..., "
+        data = _leading_trailing(a)
+    else:
+        summary_insert = ""
+        data = ravel(asarray(a))
+
+    format_function = _get_format_function(a.dtype, data, precision, suppress_small, formatter)
+
+    # skip over "["
+    next_line_prefix = " "
+    # skip over array(
+    next_line_prefix += " "*len(prefix)
+
+    lst = _formatArray(a, format_function, len(a.shape), max_line_width,
+                       next_line_prefix, separator,
+                       _summaryEdgeItems, summary_insert)[:-1]
+    return lst
+
+def _get_format_function(dtype, data, precision, suppress_small, formatter=None):
     if precision is None:
         precision = _float_output_precision
 
@@ -248,13 +271,6 @@ def _array2string(a, max_line_width, precision, suppress_small, separator=' ',
 
     if formatter is None:
         formatter = _formatter
-
-    if a.size > _summaryThreshold:
-        summary_insert = "..., "
-        data = _leading_trailing(a)
-    else:
-        summary_insert = ""
-        data = ravel(asarray(a))
 
     formatdict = {'bool': _boolFormatter,
                   'int': IntegerFormat(data),
@@ -290,7 +306,7 @@ def _array2string(a, max_line_width, precision, suppress_small, separator=' ',
                 formatdict[key] = formatter[key]
 
     # find the right formatting function for the array
-    dtypeobj = a.dtype.type
+    dtypeobj = dtype.type
     if issubclass(dtypeobj, _nt.bool_):
         format_function = formatdict['bool']
     elif issubclass(dtypeobj, _nt.integer):
@@ -315,15 +331,8 @@ def _array2string(a, max_line_width, precision, suppress_small, separator=' ',
     else:
         format_function = formatdict['numpystr']
 
-    # skip over "["
-    next_line_prefix = " "
-    # skip over array(
-    next_line_prefix += " "*len(prefix)
+    return format_function
 
-    lst = _formatArray(a, format_function, len(a.shape), max_line_width,
-                       next_line_prefix, separator,
-                       _summaryEdgeItems, summary_insert)[:-1]
-    return lst
 
 def _convert_arrays(obj):
     from . import numeric as _nc
@@ -435,10 +444,14 @@ def array2string(a, max_line_width=None, precision=None,
     """
 
     if a.shape == ():
+        # singleton, i.e. numpy.array(...)
         x = a.item()
-        if isinstance(x, tuple):
+        if isinstance(x, tuple):    # for structured records, from commit 38124a0
             x = _convert_arrays(x)
-        lst = style(x)
+            lst = style(x)
+        else:   # print singleton
+            format_function = _get_format_function(a.dtype, a, precision, suppress_small, formatter)
+            lst = format_function(a)
     elif reduce(product, a.shape) == 0:
         # treat as a null array if any of shape elements == 0
         lst = "[]"
@@ -465,11 +478,12 @@ def _formatArray(a, format_function, rank, max_line_len,
 
     """
     if rank == 0:
-        obj = a.item()
-        if isinstance(obj, tuple):
-            obj = _convert_arrays(obj)
-        return str(obj)
-
+        # TODO: This section seems unreachable
+        # obj = a.item()
+        # if isinstance(obj, tuple):
+        #     obj = _convert_arrays(obj)
+        # return str(obj)
+        pass
     if summary_insert and 2*edge_items < len(a):
         leading_items = edge_items
         trailing_items = edge_items
@@ -546,8 +560,23 @@ class FloatFormat(object):
         with _nc.errstate(all='ignore'):
             special = isnan(data) | isinf(data)
             valid = not_equal(data, 0) & ~special
-            non_zero = absolute(data.compress(valid))
-            if len(non_zero) == 0:
+            if data.shape == ():
+                non_zero = absolute(data) if valid else 0
+            else:
+                non_zero = absolute(data.compress(valid))
+            if data.shape == ():
+                if not non_zero:
+                    max_val = 0.
+                    min_val = 0.
+                else:
+                    max_val = non_zero
+                    min_val = non_zero
+                    if max_val >= 1.e8:
+                        self.exp_format = True
+                    if not self.suppress_small and (min_val < 0.0001
+                                               or max_val/min_val > 1000.):
+                        self.exp_format = True
+            elif len(non_zero) == 0:
                 max_val = 0.
                 min_val = 0.
             else:
@@ -571,7 +600,12 @@ class FloatFormat(object):
             format = format + '%d.%de' % (self.max_str_len, self.precision)
         else:
             format = '%%.%df' % (self.precision,)
-            if len(non_zero):
+            if data.shape == ():
+                if non_zero:
+                    precision = _digits(non_zero, self.precision, format)                    
+                else:
+                    precision = 0
+            elif len(non_zero):
                 precision = max([_digits(x, self.precision, format)
                                  for x in non_zero])
             else:
@@ -634,8 +668,11 @@ def _digits(x, precision, format):
 class IntegerFormat(object):
     def __init__(self, data):
         try:
-            max_str_len = max(len(str(maximum.reduce(data))),
-                              len(str(minimum.reduce(data))))
+            if data.shape == ():
+                max_str_len = len(str(data.item()))
+            else:
+                max_str_len = max(len(str(maximum.reduce(data))),
+                                  len(str(minimum.reduce(data))))
             self.format = '%' + str(max_str_len) + 'd'
         except (TypeError, NotImplementedError):
             # if reduce(data) fails, this instance will not be called, just
